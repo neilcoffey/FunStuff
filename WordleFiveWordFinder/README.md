@@ -30,4 +30,7 @@ The following are left as an exercise to the reader:
 - Determine whether the third level of recursion is the most optimum for creating
   the sublist of remaining candidates
 
-Please direct further all rants, observations and corrections to @BitterCoffey :)
+Overall, the search checks in the order of billions of 5-word combinations. Despite
+Matt's skepticism, you *can* indeed check millions of combinations per second!
+
+Please direct all further rants, observations and corrections to @BitterCoffey :)

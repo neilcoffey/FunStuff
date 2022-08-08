@@ -2,14 +2,19 @@
  * See https://github.com/neilcoffey/FunStuff
  */
 
-import java.io.File;
 import java.io.IOException;
-import java.nio.file.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 public class WordleFiveWordFinder {
+    private static final boolean PARALLEL = true;
+    private static final boolean ORDER_BY_LETTER_FREQUENCY = true;
+
     private static final String NEWLINE = String.format("%n");
     private static final Set<String> BANNED_WORDS = Stream.of(
         "FLDXT", "HDQRS", "ZHMUD", "SEQWL", "CHIVW", "GCONV", "FCONV", "EXPWY", "PBXES"
@@ -63,6 +68,10 @@ public class WordleFiveWordFinder {
     }
 
     private void solve() {
+        if (ORDER_BY_LETTER_FREQUENCY) {
+            sortWordsByLetterEntropy();
+        }
+
         // Pre-compute the bitmaps of all candidate words
         int[] bitmaps = new int[words.size()];
         for (int i = 0; i < words.size(); i++) {
@@ -70,46 +79,53 @@ public class WordleFiveWordFinder {
         }
 
         // Create a re-usable array for storing subsets of candidate words for filling positions 3-5.
-        int[] thirdWords = new int[MAX_CANDIDATES_LEVEL_THREE];
+        ThreadLocal<int[]> thirdWordsBuffer = ThreadLocal.withInitial(() -> new int[MAX_CANDIDATES_LEVEL_THREE]);
 
         int noWords = words.size();
-        // For each candidate first word...
-        for (int i = noWords-1; i >= 0; i--) {
-            if ((i % 100) == 0) {
-                System.out.println(i + " left...");
-            }
-            int bitmap1 = bitmaps[i];
+        IntStream firstIndexStream = IntStream.range(0, noWords).map(i -> noWords-1-i);
+        if (PARALLEL) {
+            firstIndexStream = firstIndexStream.parallel();
+        }
 
-            // For each candidate second word...
-            for (int j = i-1; j >= 0; j--) {
-                int bitmap2 = bitmaps[j];
-                if ((bitmap1 & bitmap2) == 0) {
-                    int noThirdWords = 0;
+        firstIndexStream.forEach(i -> {
+            solveWithFirstWord(i, bitmaps, thirdWordsBuffer.get());
+        });
+    }
 
-                    // Populate a list of all candidate words to fill the remaining three slots,
-                    // given first and second candidates 'i' and 'j'
-                    for (int k = j-1; k >= 0; k--) {
-                        int bitmap3 = bitmaps[k];
-                        if (((bitmap1 | bitmap2) & bitmap3) == 0) {
-                            thirdWords[noThirdWords * 2] = k;
-                            thirdWords[noThirdWords * 2 + 1] = bitmap3;
-                            noThirdWords++;
-                        }
+    private void solveWithFirstWord(int i, int[] bitmaps, int[] thirdWordsBuffer) {
+        int bitmap1 = bitmaps[i];
+
+        // For each candidate second word...
+        for (int j = i-1; j >= 0; j--) {
+            int bitmap2 = bitmaps[j];
+            if ((bitmap1 & bitmap2) == 0) {
+                int noThirdWords = 0;
+
+                // Populate a list of all candidate words to fill the remaining three slots,
+                // given first and second candidates 'i' and 'j'
+                for (int k = j-1; k >= 0; k--) {
+                    int bitmap3 = bitmaps[k];
+                    if (((bitmap1 | bitmap2) & bitmap3) == 0) {
+                        thirdWordsBuffer[noThirdWords * 2] = k;
+                        thirdWordsBuffer[noThirdWords * 2 + 1] = bitmap3;
+                        noThirdWords++;
                     }
+                }
 
-                    // Consider combinations from the smaller list for words 3, 4 and 5
-                    if (noThirdWords > 0) {
-                        findSolution(bitmap1 | bitmap2, thirdWords, noThirdWords, i, j);
-                    }
+                // Consider combinations from the smaller list for words 3, 4 and 5
+                if (noThirdWords > 0) {
+                    findSolution(bitmap1 | bitmap2, thirdWordsBuffer, noThirdWords, i, j);
                 }
             }
         }
     }
 
     private void dumpSolutions() {
-        for (int i = 0; i < solutions.size(); i++) {
-            System.out.println("-------- Solution " + (i+1) + " -------");
-            printSolution(solutions.get(i));
+        synchronized (solutions) {
+            for (int i = 0; i < solutions.size(); i++) {
+                System.out.println("-------- Solution " + (i + 1) + " -------");
+                printSolution(solutions.get(i));
+            }
         }
     }
 
@@ -141,7 +157,9 @@ public class WordleFiveWordFinder {
                             solution[2] = availableWords[k * 2];
                             solution[3] = availableWords[l * 2];
                             solution[4] = availableWords[m * 2];
-                            solutions.add(solution);
+                            synchronized (solutions) {
+                                solutions.add(solution);
+                            }
                         }
                     }
                 }
@@ -160,8 +178,36 @@ public class WordleFiveWordFinder {
         System.out.println(sb);
     }
 
+    private void sortWordsByLetterEntropy() {
+        int[] letterCounts = new int[26];
+        for (String w : words) {
+            for (int n = w.length()-1; n >= 0; n--) {
+                int letterNo = w.charAt(n) - 'A';
+                if (letterNo < 0 || letterNo >= 26)
+                    throw new RuntimeException("Unexpected letter " + letterNo + " in '" + w + "'");
+                letterCounts[letterNo]++;
+            }
+        }
+
+        Map<String, Long> totalFreqs = new HashMap<>(words.size());
+        for (String w : words) {
+            totalFreqs.put(w, totalFreq(w, letterCounts));
+        }
+
+        words.sort(Comparator.comparingLong(totalFreqs::get));
+    }
+
     private WordleFiveWordFinder(Path wordFile) throws IOException {
         this.words = stripAnagrams(extractCandidateWords(wordFile));
+    }
+
+    private static long totalFreq(String w, int[] freqs) {
+        long t = 0;
+        for (int n = w.length()-1; n >= 0; n--) {
+            int letterNo = w.charAt(n) - 'A';
+            t += freqs[letterNo];
+        }
+        return t;
     }
 
     /**
